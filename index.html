@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>qxp1</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#000000" />
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js');
+    }
+  </script>
+  <script src="https://unpkg.com/dexie@3.2.2/dist/dexie.min.js"></script>
+  <style>
+    body {
+      background-color: black;
+      color: lime;
+      font-family: monospace;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    #profileBar {
+      padding: 5px;
+      background: #111;
+      font-weight: bold;
+    }
+    #output {
+      white-space: pre-wrap;
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px;
+    }
+    #input {
+      width: 100%;
+      background: black;
+      color: lime;
+      border: none;
+      font-family: monospace;
+      font-size: 16px;
+      padding: 10px;
+      box-sizing: border-box;
+    }
+  </style>
+</head>
+<body>
+  <div id="profileBar">| tag : --- | cash : 0 | age : 0 | job : none | income : 0 |</div>
+  <div id="output"></div>
+  <input id="input" autocomplete="off" />
+
+  <script>
+    const db = new Dexie("qxp1DB");
+    db.version(1).stores({ players: "tag" });
+
+    const $ = (id) => document.getElementById(id);
+    const print = (text) => {
+      $("output").innerText += text + "\n";
+      $("output").scrollTop = $("output").scrollHeight;
+    };
+
+    let player = null;
+    const jobs = { tech: 3, ceo: 5, cook: 2 };
+    const items = { pager: 10, dvd: 5, tape: 3, cd: 4 };
+
+    const getAge = () => player ? Math.floor((Date.now() - player.createdAt) / (1000 * 60 * 60 * 24)) : 0;
+    const getClaimTime = () => player ? Math.floor((Date.now() - (player.lastClaim || 0)) / 1000) : 0;
+
+    const updateProfileBar = () => {
+      if (!player) return;
+      const claimLeft = 86400 - getClaimTime();
+      const hours = Math.floor(claimLeft / 3600);
+      const mins = Math.floor((claimLeft % 3600) / 60);
+      let claimStatus = claimLeft <= 0 ? "✅ Ready" : `⏳ ${hours}j ${mins}m`;
+      $("profileBar").innerText =
+        `| tag : ${player.tag} | cash : ${player.cash} | age : ${getAge()} | job : ${player.job || 'none'} | income : ${player.wage || 0} | claim : ${claimStatus} |`;
+      if (player.cash < 0) print("⚠️ Anda dalam status BANKRAP. Sila topup atau berhenti berjudi.");
+    };
+
+    const saveToStorage = async () => player && await db.players.put(player);
+    const loadFromStorage = async () => {
+      const all = await db.players.toArray();
+      if (all.length) {
+        player = all[0];
+        print(`Auto login as ${player.tag}`);
+        updateProfileBar();
+      }
+    };
+
+    const commands = {
+      signup: async ([pass]) => {
+        if ((pass || "").length < 6) return print("Password min 6 aksara");
+        const tag = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
+        player = { tag, password: pass, cash: 0, job: null, wage: 0, inventory: {}, createdAt: Date.now(), lastClaim: 0 };
+        await db.players.clear();
+        await db.players.put(player);
+        print(`Signup berjaya! tag anda: ${tag}`);
+        updateProfileBar();
+      },
+      login: async ([tag, pass]) => {
+        const found = await db.players.get(tag);
+        if (found?.password === pass) {
+          player = found;
+          print(`Login sebagai ${tag}`);
+          updateProfileBar();
+        } else print("Login gagal");
+      },
+      reset: async () => {
+        await db.players.clear();
+        player = null;
+        print("Akaun dipadam");
+        updateProfileBar();
+      },
+      joblist: () => {
+        print("Senarai kerja:");
+        for (const [j, w] of Object.entries(jobs)) print(`- ${j} : ${w}`);
+      },
+      apply: ([job]) => {
+        if (!player) return print("Login dulu");
+        if (!jobs[job]) return print("Kerja tidak wujud");
+        player.job = job;
+        player.wage = jobs[job];
+        updateProfileBar();
+        print(`Anda bekerja sebagai ${job}`);
+        saveToStorage();
+      },
+      resign: () => {
+        if (!player) return;
+        player.job = null;
+        player.wage = 0;
+        print("Anda berhenti kerja");
+        updateProfileBar();
+        saveToStorage();
+      },
+      claim: () => {
+        if (!player || !player.job) return print("Kena ada kerja dulu");
+        const now = Date.now();
+        if ((now - (player.lastClaim || 0)) < 86400000) return print("Belum cukup 24 jam");
+        const wage = player.wage * 24;
+        player.cash += wage;
+        player.lastClaim = now;
+        print(`✅ Gaji harian diterima: +${wage}`);
+        if (player.cash < 0) {
+          const penalty = 2;
+          player.cash -= penalty;
+          print(`💸 Penalti bankrap: -${penalty}`);
+        }
+        updateProfileBar();
+        saveToStorage();
+      },
+      itemlist: () => {
+        print("Senarai item:");
+        for (const [name, price] of Object.entries(items)) print(`- ${name} : ${price}`);
+      },
+      buy: ([item, qty]) => {
+        if (!player) return;
+        qty = parseInt(qty);
+        const cost = (items[item] || 0) * qty;
+        player.cash -= cost;
+        player.inventory[item] = (player.inventory[item] || 0) + qty;
+        print(`Beli ${qty}x ${item} (-${cost} cash)`);
+        updateProfileBar();
+        saveToStorage();
+      },
+      sell: ([item, qty]) => {
+        if (!player) return;
+        qty = parseInt(qty);
+        if ((player.inventory[item] || 0) < qty) return print("Item tidak cukup");
+        const refund = Math.floor(items[item] * qty / 2);
+        player.inventory[item] -= qty;
+        player.cash += refund;
+        print(`Jual ${qty}x ${item} (+${refund} cash)`);
+        updateProfileBar();
+        saveToStorage();
+      },
+      inv: () => {
+        if (!player) return;
+        print("Inventory:");
+        for (const [i, q] of Object.entries(player.inventory)) print(`- ${i} x${q}`);
+      },
+      dice: ([bet]) => {
+        if (!player) return;
+        bet = parseInt(bet);
+        if (bet < 5) return print("Min bet: 5");
+        const npc = Math.floor(Math.random() * 20);
+        const user = Math.floor(Math.random() * 20);
+        const win = user >= npc;
+        player.cash += win ? bet : -bet;
+        print(`Dice ${user} vs NPC ${npc} → ${win ? 'Menang' : 'Kalah'} (${win ? '+' : '-'}${bet})`);
+        updateProfileBar();
+        saveToStorage();
+      },
+      slots: ([bet]) => {
+        if (!player) return;
+        bet = parseInt(bet);
+        if (bet < 5) return print("Min bet: 5");
+        const s = ['🍒','🔔','💎'];
+        const r = [0,0,0].map(() => s[Math.floor(Math.random()*s.length)]);
+        const win = r[0] === r[1] && r[1] === r[2];
+        print(`[ ${r.join(' ')} ]`);
+        player.cash += win ? bet : -bet;
+        print(win ? `Menang +${bet}` : `Kalah -${bet}`);
+        updateProfileBar();
+        saveToStorage();
+      },
+      crime: ([lvl]) => {
+        if (!player) return;
+        lvl = parseInt(lvl);
+        if (![1,2,3].includes(lvl)) return print("Gunakan level 1-3");
+        const success = Math.random() < (0.6 - lvl * 0.1);
+        const reward = 10 * lvl + Math.floor(Math.random() * 10);
+        const fine = 10 * lvl + Math.floor(Math.random() * 20);
+        if (success) {
+          player.cash += reward;
+          print(`Crime berjaya! +${reward}`);
+        } else {
+          player.cash -= fine;
+          print(`Crime gagal! Denda -${fine}`);
+        }
+        updateProfileBar();
+        saveToStorage();
+      },
+      bailout: () => {
+        if (!player) return;
+        if (player.cash >= 0) return print("Anda belum bankrap.");
+        const topup = 20;
+        player.cash += topup;
+        print(`🏦 Bantuan kerajaan +${topup} cash`);
+        updateProfileBar();
+        saveToStorage();
+      },
+      savefile: () => {
+        if (!player) return;
+        const blob = new Blob([JSON.stringify(player)], { type: "application/json" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `zxvwp_${player.tag}.json`;
+        a.click();
+      },
+      loadfile: () => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".json";
+        input.onchange = async (e) => {
+          const file = e.target.files[0];
+          const reader = new FileReader();
+          reader.onload = async () => {
+            player = JSON.parse(reader.result);
+            await db.players.clear();
+            await db.players.put(player);
+            print(`Fail dimuatkan: ${player.tag}`);
+            updateProfileBar();
+          };
+          reader.readAsText(file);
+        };
+        input.click();
+      },
+      help: () => {
+        print(`📌 AKAUN
+signup <password>            - Daftar
+login <tag> <password>       - Login
+reset                        - Padam akaun
+
+💼 KERJA
+joblist                      - Senarai kerja
+apply <jobname>              - Mohon kerja
+resign                       - Berhenti kerja
+claim                        - Tuntut gaji harian
+
+🛒 BARANG
+itemlist                     - Lihat barang
+buy <item> <qty>             - Beli
+sell <item> <qty>            - Jual
+inv                          - Lihat inventory
+
+🎲 GAME
+dice <bet>                  - Main dadu
+slots <bet>                 - Mesin slot
+
+🦹 CRIME
+crime <level 1-3>           - Cuba jenayah
+
+💾 FAIL
+savefile                    - Simpan fail
+loadfile                    - Muat naik fail
+
+🆘 BANKRAP
+bailout                     - Bantuan kerajaan
+
+❔ LAIN
+help                        - Senarai arahan`);
+      }
+    };
+
+    $("input").addEventListener("keydown", async (e) => {
+      if (e.key === "Enter") {
+        const [cmd, ...args] = e.target.value.trim().split(" ");
+        e.target.value = "";
+        print("> " + cmd + " " + args.join(" "));
+        if (commands[cmd]) await commands[cmd](args);
+        else print("Arahan tidak sah. Taip 'help'");
+      }
+    });
+
+    loadFromStorage();
+  </script>
+</body>
+</html>
