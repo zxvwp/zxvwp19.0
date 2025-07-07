@@ -1,7 +1,7 @@
 self.addEventListener("install", (e) => {
   self.skipWaiting();
   e.waitUntil(
-    caches.open("qxp1").then((cache) => {
+    caches.open("zxvwp19.0").then((cache) => {
       return cache.addAll(["./", "./index.html", "./manifest.json"]);
     })
   );
